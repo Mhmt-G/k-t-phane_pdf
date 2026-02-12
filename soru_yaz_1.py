@@ -1,69 +1,148 @@
-import streamlit as st
-import json
-import pandas as pd
+import os
+import shutil
+import re
+from collections import Counter
+from pypdf import PdfReader # pip install pypdf gereklidir
 
-# Sayfa Yapılandırması
-st.set_page_config(page_title="SoruRota Soru Düzenleme Paneli", layout="wide")
+# --- AYARLAR ---
+KAYNAK_KLASOR = r"C:\Kullanici\Downloads\Kitaplarim"  # Düzenlenecek klasör
+HEDEF_KLASOR = r"C:\Kullanici\Documents\Kutuphanem_Pro"   # Yeni yer
 
-st.title("🧪 Fen Bilimleri Soru Düzenleme ve Yönetim Paneli")
-st.write("JSON formatındaki soruları yükleyin, düzenleyin ve dışa aktarın.")
+# Kategori Anahtar Kelimeleri (Hem içerik hem dosya adı için)
+KATEGORILER = {
+    "Yazılım ve Teknoloji": [
+        "python", "java", "coding", "algorithm", "html", "css", "yapay zeka", 
+        "artificial intelligence", "data science", "machine learning", "kodlama", "software"
+    ],
+    "Tarih ve Siyaset": [
+        "tarih", "savaş", "imparatorluk", "cumhuriyet", "devlet", "history", 
+        "war", "politics", "siyaset", "diplomasi", "osmanlı", "atatürk"
+    ],
+    "Bilim ve Mühendislik": [
+        "fizik", "kimya", "biyoloji", "matematik", "mühendislik", "physics", 
+        "chemistry", "biology", "math", "integral", "türev", "kuantum", "hücre"
+    ],
+    "Edebiyat ve Roman": [
+        "roman", "hikaye", "öykü", "edebiyat", "novel", "fiction", "şiir", 
+        "yazar", "betimleme", "narrative"
+    ],
+    "Felsefe ve Psikoloji": [
+        "felsefe", "psikoloji", "düşünce", "zihin", "davranış", "philosophy", 
+        "psychology", "nietzsche", "freud", "bilinç"
+    ],
+    "Finans ve Ekonomi": [
+        "ekonomi", "borsa", "para", "finans", "yatırım", "pazarlama", 
+        "economy", "finance", "bitcoin", "trade"
+    ]
+}
 
-# 1. Dosya Yükleme
-uploaded_file = st.file_uploader("Soru JSON dosyasını seçiniz", type=['json'])
+def metin_temizle(metin):
+    """Metindeki noktalama işaretlerini kaldırır ve küçük harfe çevirir."""
+    return re.sub(r'[^\w\s]', '', metin).lower()
 
-if uploaded_file is not None:
-    data = json.load(uploaded_file)
+def pdf_icerik_puanla(dosya_yolu):
+    """PDF'in ilk sayfalarını okur ve kategori puanlarını hesaplar."""
+    puanlar = {kategori: 0 for kategori in KATEGORILER}
+    okunan_metin = ""
     
-    # Eğer tek bir soruysa listeye çevir
-    if isinstance(data, dict):
-        questions = [data]
-    else:
-        questions = data
-
-    # 2. Soru Seçimi
-    question_titles = [f"Soru {i+1}: {q.get('konu', 'Adsız Konu')}" for i, q in enumerate(questions)]
-    selected_index = st.sidebar.selectbox("Düzenlenecek Soruyu Seçin", range(len(question_titles)), format_func=lambda x: question_titles[x])
-    
-    curr_q = questions[selected_index]
-
-    # 3. Düzenleme Alanı
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.subheader("📝 Soru İçeriği")
-        curr_q['soruYazari'] = st.text_input("Soru Yazarı", curr_q.get('soruYazari', ''))
-        curr_q['kazanim'] = st.text_input("Kazanım No", curr_q.get('kazanim', '')) 
-        curr_q['ustMetin'] = st.text_area("Üst Metin / Senaryo", curr_q.get('ustMetin', '')) 
-        curr_q['soruMetni'] = st.text_area("Soru Kökü", curr_q.get('soruMetni', '')) 
+    try:
+        reader = PdfReader(dosya_yolu)
+        # Sadece ilk 15 sayfayı oku (Performans için)
+        sayfa_sayisi = min(len(reader.pages), 15)
         
-        st.write("**Seçenekler**")
-        options = curr_q.get('secenekler', {"A": "", "B": "", "C": "", "D": ""})
-        options['A'] = st.text_input("A Şıkkı", options['A'])
-        options['B'] = st.text_input("B Şıkkı", options['B'])
-        options['C'] = st.text_input("C Şıkkı", options['C'])
-        options['D'] = st.text_input("D Şıkkı", options['D'])
-        curr_q['secenekler'] = options
-
-    with col2:
-        st.subheader("⚙️ Teknik Detaylar & Görsel")
-        curr_q['dogruCevap'] = st.selectbox("Doğru Cevap", ["A", "B", "C", "D"], index=["A", "B", "C", "D"].index(curr_q.get('dogruCevap', 'A'))) 
-        curr_q['zorluk'] = st.slider("Zorluk (0.0: Zor, 1.0: Kolay)", 0.0, 1.0, float(curr_q.get('zorluk', 0.5))) 
-        curr_q['cozum'] = st.text_area("Çözüm Açıklaması", curr_q.get('cozum', '')) 
+        for i in range(sayfa_sayisi):
+            sayfa_metni = reader.pages[i].extract_text()
+            if sayfa_metni:
+                okunan_metin += " " + sayfa_metni
         
-        # Çizim Kodları Alanı
-        curr_q['pythonKodu'] = st.text_area("Python Çizim Kodu", curr_q.get('pythonKodu', '')) 
-        curr_q['htmlKodu'] = st.text_area("HTML/SVG Kodu", curr_q.get('htmlKodu', '')) 
+        if not okunan_metin.strip():
+            return None # Metin okunamadı (muhtemelen resim tabanlı PDF)
 
-    # 4. Kaydetme ve Dışa Aktarma
-    st.divider()
-    updated_json = json.dumps(questions, indent=4, ensure_ascii=False)
+        temiz_metin = metin_temizle(okunan_metin)
+        kelimeler = temiz_metin.split()
+        
+        # Kelime sayımı yap
+        for kategori, anahtar_kelimeler in KATEGORILER.items():
+            for anahtar in anahtar_kelimeler:
+                # Anahtar kelimenin metinde kaç kere geçtiğini bul
+                gecme_sayisi = temiz_metin.count(anahtar)
+                puanlar[kategori] += gecme_sayisi
+
+        # En yüksek puanı bul
+        en_yuksek_kategori = max(puanlar, key=puanlar.get)
+        
+        # Eğer hiç puan alınamadıysa veya puan çok düşükse
+        if puanlar[en_yuksek_kategori] < 2: 
+            return None
+            
+        return en_yuksek_kategori
+
+    except Exception as e:
+        print(f"  [!] PDF okuma hatası: {e}")
+        return None
+
+def dosya_adi_puanla(dosya_adi):
+    """Eğer içerik okunamadıysa dosya adına bakar."""
+    dosya_adi = dosya_adi.lower()
+    for kategori, anahtar_kelimeler in KATEGORILER.items():
+        for kelime in anahtar_kelimeler:
+            if kelime in dosya_adi:
+                return kategori
+    return "Diğer"
+
+def main():
+    if not os.path.exists(HEDEF_KLASOR):
+        os.makedirs(HEDEF_KLASOR)
+
+    dosyalar = [f for f in os.listdir(KAYNAK_KLASOR) if f.lower().endswith('.pdf')]
+    toplam_dosya = len(dosyalar)
     
-    st.download_button(
-        label="✅ Tüm Soruları JSON Olarak İndir",
-        data=updated_json,
-        file_name="guncellenen_sorular.json",
-        mime="application/json"
-    )
+    print(f"\n🚀 PRO MODU BAŞLATILDI: {toplam_dosya} kitap analiz ediliyor...\n")
+    
+    istatistikler = {"İçerikten Bulunan": 0, "İsimden Bulunan": 0, "Bulunamayan": 0}
 
-else:
-    st.info("Lütfen düzenlemek için bir JSON dosyası yükleyin.")
+    for index, dosya in enumerate(dosyalar, 1):
+        kaynak_yol = os.path.join(KAYNAK_KLASOR, dosya)
+        print(f"[{index}/{toplam_dosya}] Analiz ediliyor: {dosya}...", end="\r")
+        
+        # 1. YÖNTEM: İçerik Analizi
+        kategori = pdf_icerik_puanla(kaynak_yol)
+        
+        if kategori:
+            metod = "İÇERİK ANALİZİ"
+            istatistikler["İçerikten Bulunan"] += 1
+        else:
+            # 2. YÖNTEM: Dosya Adı Analizi (Fallback)
+            kategori = dosya_adi_puanla(dosya)
+            metod = "İSİM ANALİZİ"
+            if kategori == "Diğer":
+                istatistikler["Bulunamayan"] += 1
+            else:
+                istatistikler["İsimden Bulunan"] += 1
+
+        # Taşıma İşlemi
+        hedef_kategori_yolu = os.path.join(HEDEF_KLASOR, kategori)
+        if not os.path.exists(hedef_kategori_yolu):
+            os.makedirs(hedef_kategori_yolu)
+            
+        try:
+            shutil.move(kaynak_yol, os.path.join(hedef_kategori_yolu, dosya))
+            # Terminal çıktısını temiz tutalım, sadece sonucu yazalım
+            print(f"✅ {dosya[:30]}... -> [{kategori}] ({metod}){' '*20}")
+        except Exception as e:
+            print(f"❌ HATA: {dosya} taşınamadı. {e}")
+
+    # --- SIRALAMA VE RAPORLAMA ---
+    print("\n" + "="*50)
+    print("📊 İŞLEM ÖZETİ")
+    print("="*50)
+    print(f"🧠 İçerik Analizi ile Sınıflandırılan: {istatistikler['İçerikten Bulunan']}")
+    print(f"🏷️ İsim Analizi ile Sınıflandırılan: {istatistikler['İsimden Bulunan']}")
+    print(f"📂 'Diğer' Klasörüne Atılan: {istatistikler['Bulunamayan']}")
+    print("\nKütüphaneniz şu an şurada hazır: " + HEDEF_KLASOR)
+    
+    # Kullanıcıya klasörü açmak ister misin diye soralım (Windows için)
+    os.startfile(HEDEF_KLASOR)
+
+if __name__ == "__main__":
+    main()
